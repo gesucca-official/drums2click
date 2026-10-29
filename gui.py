@@ -31,6 +31,7 @@ class App(tk.Tk):
         self.fmt = tk.StringVar(value="flac")
         self.check = tk.BooleanVar(value=False)
         self.smooth = tk.IntVar(value=4)
+        self.bpm = tk.StringVar()
 
         pad = {"padx": 8, "pady": 4}
         f = ttk.Frame(self, padding=8)
@@ -55,6 +56,8 @@ class App(tk.Tk):
             row=2, column=0, columnspan=3, sticky="w")
         ttk.Label(opts, text="Smoothing tempo (±beat, 0 = segue ogni colpo)").grid(row=3, column=0, sticky="w")
         ttk.Spinbox(opts, from_=0, to=32, width=5, textvariable=self.smooth).grid(row=3, column=1, padx=6)
+        ttk.Label(opts, text="BPM indicativo (opzionale, sceglie la pulsazione)").grid(row=4, column=0, sticky="w")
+        ttk.Entry(opts, width=7, textvariable=self.bpm).grid(row=4, column=1, padx=6)
 
         self.run_btn = ttk.Button(f, text="Genera", command=self.run)
         self.run_btn.grid(row=3, column=0, sticky="w", **pad)
@@ -105,6 +108,13 @@ class App(tk.Tk):
             cmd += ["--click-audio", f"{base}_click.{self.fmt.get()}"]
         if self.check.get():
             cmd += ["--check-wav", f"{base}_check.wav"]
+        bpm = self.bpm.get().strip().replace(",", ".")
+        if bpm:
+            try:
+                cmd += ["--bpm", str(float(bpm))]
+            except ValueError:
+                messagebox.showerror("Drums → Click", "Il BPM indicativo deve essere un numero.")
+                return
 
         self.log.configure(state="normal")
         self.log.delete("1.0", "end")
