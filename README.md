@@ -36,12 +36,16 @@ Requires Python 3.10+ and, for MP3 output only, `ffmpeg` on the PATH.
 setup.bat
 ```
 
-This creates a `.venv` and installs PyTorch (CPU build), Beat This! and the other dependencies.
+This creates a `.venv`, installs PyTorch (CPU build), Beat This! and the other dependencies, and
+creates the `Drums2Click` shortcut.
 The model checkpoint is downloaded automatically on first run.
 
 ## Usage
 
-**GUI:** double-click `Drums2Click.bat`, choose the stem and the output folder, then click *Genera*.
+**GUI:** double-click the **Drums2Click** shortcut (metronome icon, created by `setup.bat`, or
+run `make_shortcut.ps1`), or `Drums2Click.bat`. Choose the stem and the output folder, then click
+*Genera click*. The window follows the Windows light/dark theme, and the technical log is under
+*Dettagli*. Icon and checkbox graphics are drawn by `tools/make_assets.py`.
 
 **Command line:**
 

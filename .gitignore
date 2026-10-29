@@ -6,6 +6,7 @@ __pycache__/
 # audio and generated files (stems are copyrighted, outputs are per-song)
 out/
 reference/
+*.lnk
 *.wav
 *.flac
 *.mp3
