@@ -1,0 +1,15 @@
+# environment
+.venv/
+__pycache__/
+*.pyc
+
+# audio and generated files (stems are copyrighted, outputs are per-song)
+out/
+*.wav
+*.flac
+*.mp3
+*.aif
+*.aiff
+*.ogg
+*.mid
+*_beats.txt
