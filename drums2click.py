@@ -74,168 +74,33 @@ def refine_to_onsets(beats, env, fps, window_s):
     return out, moved
 
 
-def drop_extra(beats, min_island=4):
-    """Drop isolated hits (a lone roll in a free intro) and doubled detections (eighth-note fills).
-
-    Returns (beats, isolated dropped, doubles dropped).
-    """
-    med = float(np.median(np.diff(beats)))
-    runs = np.split(beats, np.where(np.diff(beats) > 4 * med)[0] + 1)
-    kept = [r for r in runs if len(r) >= min_island]
-    isolated = len(beats) - sum(len(r) for r in kept)
-    beats = np.concatenate(kept) if kept else beats
+def fix_beats(beats):
+    """Drop doubled detections and fill gaps where the drums stop (breaks, breakdowns)."""
+    def local_ibi(x):
+        ibi = np.diff(x)
+        return ibi, np.array([np.median(ibi[max(0, i - 8):i + 9]) for i in range(len(ibi))])
 
     # compare against the tempo of the beats already kept, so a run of double-time detections
-    # can't become the reference
+    # (e.g. eighth-note fills) can't become the reference
     ref = float(np.median(np.diff(beats)))
     keep = [beats[0]]
     for b in beats[1:]:
-        if b - keep[-1] >= 0.6 * ref:  # 0.6 < 2/3, so a 3:2 switch (e.g. 100 -> 150) is kept
+        if b - keep[-1] >= 0.6 * ref:
             keep.append(b)
-            if len(keep) >= 17:
-                ref = float(np.median(np.diff(keep[-17:])))
-    return np.array(keep), isolated, len(beats) - len(keep)
+            if len(keep) >= 9:
+                ref = float(np.median(np.diff(keep[-9:])))
+    dropped = len(beats) - len(keep)
+    beats = np.array(keep)
 
-
-# (ref beats, detected intervals): e.g. (3, 2) = two detected beats span three reference beats
-LEVEL_RATIOS = [(1, 3), (1, 2), (2, 3), (1, 1), (3, 2), (2, 1), (3, 1)]
-
-
-def unify_levels(beats, bpm_hint=None, tol=0.06):
-    """Keep one metrical level for the whole song.
-
-    Trackers jump between pulse levels when the feel changes: 3/4 vs 6/8 (3:2), half-time
-    (2:1). Sections whose local tempo is a simple ratio of the reference are re-divided to the
-    reference pulse; real tempo changes (non-simple ratios) are left alone. The reference is the
-    level that covers most of the song, or the one closest to bpm_hint.
-    Returns (beats, number of re-divided sections, reference BPM).
-    """
-    ibi = np.diff(beats)
-    n = len(ibi)
-    loc = np.array([np.median(ibi[max(0, i - 4):i + 5]) for i in range(n)])
-    logs = np.log(loc)
-    weight = np.array([ibi[np.abs(logs - l) < tol].sum() for l in logs])
-    ref = float(loc[np.argmax(weight)])
-    if bpm_hint:
-        levels = [ref * den / num for num, den in LEVEL_RATIOS]
-        ref = min(levels, key=lambda p: abs(np.log(p * bpm_hint / 60.0)))
-
-    def ratio(period):
-        for num, den in LEVEL_RATIOS:
-            if abs(np.log(period / ref) - np.log(num / den)) < tol:
-                return num, den
-        return 1, 1
-
-    k = [ratio(p) for p in loc]
-    k = [Counter(k[max(0, i - 4):i + 5]).most_common(1)[0][0] for i in range(n)]
-
-    out, sections, a = [beats[0]], 0, 0
-    pos = np.arange(len(beats))
-    while a < n:
-        b = a
-        while b < n and k[b] == k[a]:
-            b += 1
-        num, den = k[a]
-        use = (b - a) - (b - a) % den
-        if (num, den) != (1, 1) and use:
-            m = use * num // den
-            frac = a + np.arange(1, m + 1) * (den / num)
-            out.extend(np.interp(frac, pos, beats))
-            sections += 1
-        else:
-            use = 0
-        out.extend(beats[a + use + 1:b + 1])
-        a = b
-    return np.array(out), sections, 60.0 / ref
-
-
-def roll_ranges(raw, ref_period, min_fast=3):
-    """Time ranges where the tracker lost the beat in a roll or blast: several raw intervals in a
-    row much faster than the song's pulse (> 2.5x)."""
-    fast = np.diff(raw) < 0.4 * ref_period
-    ranges = []
-    for i in range(len(fast)):
-        if fast[max(0, i - 4):i + 5].sum() >= min_fast:
-            a, b = raw[i], raw[i + 1]
-            if ranges and a <= ranges[-1][1] + 2 * ref_period:
-                ranges[-1] = (ranges[-1][0], b)
-            else:
-                ranges.append((a, b))
-    return [(a, b) for a, b in ranges if b - a > 4 * ref_period]
-
-
-def fill_gaps(beats, is_quiet, max_click_fill=16):
-    """Fill gaps (drums stopping, or rolls removed from the guide) using the tempo on both sides.
-
-    Short gaps (breaks, stops) get normal clicks. In long gaps where the drums are silent the
-    tempo is only a guess (the band may play freely), so those beats stay in the MIDI grid but
-    are marked silent for the click. Long gaps with drums playing (rolls) keep their clicks.
-    Returns (beats, quiet gap ranges, silent ranges, filled, silent count).
-    """
-    ibi = np.diff(beats)
-    out, quiet, ranges, filled, muted = [beats[0]], [], [], 0, 0
+    ibi, med = local_ibi(beats)
+    out, filled = [beats[0]], 0
     for i in range(len(ibi)):
-        around = np.r_[ibi[max(0, i - 8):i], ibi[i + 1:i + 9]]
-        n = int(round(ibi[i] / np.median(around))) if len(around) else 1
+        n = int(round(ibi[i] / med[i]))
         if n >= 2:
-            new = np.linspace(beats[i], beats[i + 1], n + 1)[1:-1]
-            out.extend(new)
-            filled += len(new)
-            if is_quiet(beats[i], beats[i + 1]):
-                quiet.append((beats[i], beats[i + 1]))
-                if len(new) > max_click_fill:
-                    ranges.append((beats[i], beats[i + 1]))
-                    muted += len(new)
+            out.extend(np.linspace(beats[i], beats[i + 1], n + 1)[1:-1])
+            filled += n - 1
         out.append(beats[i + 1])
-    return np.array(out), quiet, ranges, filled, muted
-
-
-def in_ranges(beats, ranges, margin=0.05):
-    """Mask of beats strictly inside any (start, end) range."""
-    mask = np.zeros(len(beats), dtype=bool)
-    for a, b in ranges:
-        mask |= (beats > a + margin) & (beats < b - margin)
-    return mask
-
-
-def dp_track(guide, mono, sr, tightness=100.0):
-    """Re-track the beats with dynamic programming (Ellis 2007) on the onset envelope.
-
-    The cleaned-up beats are used only as a tempo guide; the result is the single most
-    consistent beat sequence that sits on the strongest hits, so section changes, fills and
-    rolls can't add or lose a beat.
-    """
-    env, fps = onset_envelope(mono, sr, hop=256, n_fft=1024)
-    env = env / (env.std() + 1e-9)
-    ibi = np.diff(guide)
-    per = np.array([np.median(ibi[max(0, i - 8):i + 9]) for i in range(len(ibi))])
-    mids = (guide[:-1] + guide[1:]) / 2
-    lo = int(max(0, (guide[0] - 0.05) * fps))  # start on the first guide beat, not a pickup
-    hi = int(min(len(env), (guide[-1] + 0.3 * per[-1]) * fps) + 1)
-    o = env[lo:hi]
-    P = np.interp((np.arange(lo, hi)) / fps, mids, per) * fps  # period in frames
-
-    score = o.copy()
-    back = np.full(len(o), -1)
-    for t in range(len(o)):
-        a, b = int(round(t - 2 * P[t])), int(round(t - P[t] / 2))
-        if b < 0:
-            continue
-        a = max(a, 0)
-        cand = score[a:b + 1] - tightness * np.log((t - np.arange(a, b + 1)) / P[t]) ** 2
-        k = int(np.argmax(cand))
-        if cand[k] > 0:
-            score[t] += cand[k]
-            back[t] = a + k
-
-    # last beat: best score near the end of the guide
-    tail = int(1.5 * P[-1])
-    t = len(o) - tail + int(np.argmax(score[-tail:]))
-    path = []
-    while t >= 0:
-        path.append(t)
-        t = back[t]
-    return (np.array(path[::-1]) + lo) / fps
+    return np.array(out), dropped, filled
 
 
 def smooth_beats(beats, n):
@@ -250,65 +115,42 @@ def smooth_beats(beats, n):
     return out
 
 
-def bar_starts(beats, downbeats, beats_per_bar, win_bars=8):
+def bar_starts(beats, downbeats, beats_per_bar, min_run=3):
     """Beat indices where bars start.
 
-    The meter is the most common downbeat spacing. The bar position is decided by the downbeats
-    voting over a window of win_bars bars, so scattered wrong detections don't move it. A shift
-    (an odd bar, or a beat lost in a break) is followed when the new position clearly wins and
-    keeps winning for two bars. Half-bar shifts (beat 1 vs 3, which share the same kick/snare
-    pattern) need a much larger margin.
+    The meter is the most common downbeat spacing. Where the downbeat position shifts (an odd
+    bar, or a beat lost in a break), the new position is followed once it holds for min_run
+    downbeats in a row; isolated detections (e.g. a "downbeat" on beat 3) are ignored.
     Returns (beats_per_bar, phase of the first bar, sorted bar-start indices, odd bars).
     """
-    n = len(beats)
     idx = sorted({int(np.argmin(np.abs(beats - d))) for d in downbeats})
     if beats_per_bar is None:
-        gaps = Counter(g for g in np.diff(idx) if g > 1)
+        gaps = Counter(g for g in np.diff(idx) if g > 0)
         long_gaps = Counter({g: c for g, c in gaps.items() if g >= 3})
         if long_gaps and sum(long_gaps.values()) >= 0.2 * sum(gaps.values()):
             gaps = long_gaps
         beats_per_bar = gaps.most_common(1)[0][0] if gaps else 4
     B = beats_per_bar
     if not idx:
-        return B, 0, list(range(0, n, B)), []
+        return B, 0, list(range(0, len(beats), B)), []
 
-    hit = np.zeros(n)
-    hit[idx] = 1
-    kernel = np.ones(win_bars * B + 1)
-    pos = np.arange(n)
-    votes = np.stack([np.convolve(hit * (pos % B == p), kernel, "same") for p in range(B)], axis=1)
-
-    def is_half(new, cur):
-        return B % 2 == 0 and (new - cur) % B == B // 2
-
-    def wins(i, new, cur):
-        return votes[i, new] >= (2.0 if is_half(new, cur) else 1.3) * max(votes[i, cur], 1.0)
-
-    def confirmed(s, new, need=8):
-        """need downbeats in a row, one bar apart, all on the new phase, starting at s"""
-        run = [j for j in idx if j >= s][:need]
-        return (len(run) == need and all(j % B == new for j in run)
-                and all(b - a == B for a, b in zip(run, run[1:])))
-
-    first_phase = current = int(np.argmax(votes[idx[0]]))
-    switches, i = [], 0  # (beat index where the new phase starts, phase)
-    while i < n:
-        new = int(np.argmax(votes[i]))
-        if new != current and all(wins(j, new, current) for j in range(i, min(n, i + 2 * B))):
-            # switch at the first new-phase downbeat after the last old-phase one nearby
-            last_old = max([j for j in idx if j % B == current and j < i] or [i - 1])
-            s = min([j for j in idx if j % B == new and j > last_old] or [i])
-            if not confirmed(s, new, 8 if is_half(new, current) else 4):
-                i += 1
-                continue
-            if not switches or s > switches[-1][0]:
-                switches.append((s, new))
-            current = new
-            i = max(i, s) + 1
+    phases = [i % B for i in idx]
+    switches = []  # (beat index where the new phase starts, phase)
+    current = Counter(phases[:8]).most_common(1)[0][0]
+    for j, p in enumerate(phases):
+        if p == current:
             continue
-        i += 1
+        # a half-bar shift is usually the tracker confusing beat 1 and 3 (same kick/snare
+        # pattern in both halves of the bar), so it needs much more evidence
+        need = 8 if B % 2 == 0 and (p - current) % B == B // 2 else min_run
+        run = phases[j:j + need]
+        spaced = all(idx[j + k + 1] - idx[j + k] == B for k in range(len(run) - 1))
+        if len(run) == need and all(q == p for q in run) and spaced:
+            switches.append((idx[j], p))
+            current = p
+    first_phase = Counter(phases[:8]).most_common(1)[0][0]
 
-    starts, seg_phase = [], first_phase
+    starts, seg_phase, seg_start = [], first_phase, 0
     for i in range(len(beats)):
         if switches and i == switches[0][0]:
             seg_phase = switches.pop(0)[1]
@@ -382,10 +224,8 @@ def track_chunk(events):
     return b"MTrk" + struct.pack(">I", len(data)) + data
 
 
-def write_midi(path, grid, first_real, starts, beats_per_bar, ppq, accent_note, beat_note,
-               silent=()):
-    """starts: bar-start indices into grid (lead-in bars included); silent: grid indices that
-    stay in the tempo map but get no click note."""
+def write_midi(path, grid, first_real, starts, beats_per_bar, ppq, accent_note, beat_note):
+    """starts: bar-start indices into grid (lead-in bars included)."""
     us = np.round(grid * 1e6).astype(np.int64)
     tempo_events = [(0, meta(0x03, b"Tempo Map"))]
     last = None
@@ -404,12 +244,10 @@ def write_midi(path, grid, first_real, starts, beats_per_bar, ppq, accent_note, 
             tempo_events.append((s * ppq, meta(0x58, bytes([n, 2, 24, 8]))))
             last = n
 
-    accents, silent = set(starts), set(silent)
+    accents = set(starts)
     click_events = [(0, meta(0x03, b"Click"))]
     length = ppq // 4
     for i in range(first_real, len(grid)):
-        if i in silent:
-            continue
         note = accent_note if i in accents else beat_note
         vel = 127 if i in accents else 90
         click_events.append((i * ppq, bytes([0x99, note, vel])))
@@ -562,16 +400,9 @@ def main():
     ap.add_argument("--click-audio", type=Path,
                     help="also write the click as audio (.flac/.wav/.mp3), normalized, same length "
                          "and sample rate as the stem, to replace the drums in a multitrack")
-    ap.add_argument("--count-in", type=int, default=8,
+    ap.add_argument("--count-in", type=int, default=-1,
                     help="max clicks added in the silence before the first hit "
-                         "(default 8, -1 = fill all of it, 0 = none)")
-    ap.add_argument("--bpm", type=float,
-                    help="approximate tempo you count the song in: picks the pulse level when the "
-                         "drums are ambiguous (e.g. 100 vs 150 in a 6/8 song)")
-    ap.add_argument("--keep-levels", action="store_true",
-                    help="don't unify the pulse level across sections")
-    ap.add_argument("--no-dp", action="store_true",
-                    help="skip the final dynamic-programming re-tracking")
+                         "(default -1 = fill all of it, 0 = none)")
     ap.add_argument("--click-sample", type=Path, help="custom sample for the normal clicks")
     ap.add_argument("--accent-sample", type=Path, help="custom sample for the downbeat clicks")
     args = ap.parse_args()
@@ -586,56 +417,14 @@ def main():
         sys.exit("Too few beats detected.")
     print(f"  {len(beats)} beats, {len(downbeats)} downbeats")
 
-    env, fps = onset_envelope(mono, sr)
-
-    def level_db(a, b):
-        seg = mono[int(a * sr):int(b * sr)]
-        return 20 * np.log10(np.sqrt(np.mean(seg ** 2)) + 1e-9) if len(seg) else -120.0
-
-    playing = [x for x in (level_db(t, t + 1) for t in range(int(len(mono) / sr))) if x > -60]
-    song_db = float(np.median(playing)) if playing else -20.0
-
-    def is_quiet(a, b):
-        """drums absent: much softer than the song's typical level (bleed only)"""
-        return level_db(a, b) < song_db - 15
-
-    raw = beats
     if not args.no_refine:
+        env, fps = onset_envelope(mono, sr)
         beats, moved = refine_to_onsets(beats, env, fps, args.refine_window)
         print(f"  refined {moved}/{len(beats)} beats onto drum hits")
     beats = np.unique(np.round(beats, 6))
-    beats, isolated, doubles = drop_extra(beats)
-    if isolated or doubles:
-        print(f"  removed {isolated} isolated hits, {doubles} doubled beats")
-    ref_bpm = 60.0 / np.median(np.diff(beats))
-    if not args.keep_levels:
-        beats, sections, ref_bpm = unify_levels(beats, args.bpm)
-        if sections:
-            print(f"  {sections} sections re-divided to a single pulse of ~{ref_bpm:.0f} BPM "
-                  f"(--bpm to pick another level, --keep-levels to disable)")
-            if not args.no_refine:
-                beats, _ = refine_to_onsets(beats, env, fps, args.refine_window)
-                beats = np.unique(np.round(beats, 6))
-    rolls = roll_ranges(raw, 60.0 / ref_bpm)
-    if rolls:
-        inside = in_ranges(beats, rolls, margin=0.0)
-        beats = beats[~inside]
-        print(f"  {len(rolls)} rolls/blasts where the tracker lost the beat, tempo bridged: "
-              + ", ".join(f"{a:.0f}-{b:.0f}s" for a, b in rolls))
-    beats, quiet, ranges, filled, muted = fill_gaps(beats, is_quiet)
-    if filled:
-        print(f"  filled {filled} beats in gaps" + (f" ({muted} silent in long drumless parts)" if muted else ""))
-    if not args.no_dp:
-        guide = beats
-        beats = dp_track(guide, mono, sr)
-        if not args.no_refine:
-            beats, _ = refine_to_onsets(beats, env, fps, args.refine_window)
-            beats = np.unique(np.round(beats, 6))
-        # where the drums are silent there is nothing to track: keep the interpolated beats
-        beats = np.sort(np.r_[beats[~in_ranges(beats, quiet, margin=0.1)],
-                              guide[in_ranges(guide, quiet, margin=0.1)]])
-        print(f"  re-tracked with dynamic programming: {len(beats)} beats (guide {len(guide)})")
-    silent = in_ranges(beats, ranges)
+    beats, dropped, filled = fix_beats(beats)
+    if dropped or filled:
+        print(f"  removed {dropped} doubled beats, filled {filled} beats in gaps")
     beats = smooth_beats(beats, args.smooth)
 
     beats_per_bar, phase, starts, odd = bar_starts(beats, downbeats, args.beats_per_bar)
@@ -654,7 +443,7 @@ def main():
         print(f"  first beat at {beats[0] * 1000:.0f} ms snapped to 0")
 
     write_midi(out_mid, grid, lead_in, grid_starts, beats_per_bar, args.ppq,
-               args.accent_note, args.beat_note, silent=np.where(silent)[0] + lead_in)
+               args.accent_note, args.beat_note)
     print(f"Wrote {out_mid}")
 
     if args.dump_beats:
@@ -664,7 +453,7 @@ def main():
 
     if args.check_wav:
         clicks = read_midi_clicks(out_mid)
-        err = np.array([c for c, _ in clicks]) - grid[lead_in:][~silent]
+        err = np.array([c for c, _ in clicks]) - grid[lead_in:]
         print(f"  MIDI round-trip error: max {np.abs(err).max() * 1000:.3f} ms")
         click = render_clicks(len(audio), sr, [(c, n == args.accent_note) for c, n in clicks],
                               accent, normal)
@@ -677,7 +466,7 @@ def main():
         pre = count_in(beats, args.count_in)
         accents = set(starts)
         clicks = [(t, (j - len(pre) - phase) % beats_per_bar == 0) for j, t in enumerate(pre)]
-        clicks += [(t, i in accents) for i, t in enumerate(beats) if not silent[i]]
+        clicks += [(t, i in accents) for i, t in enumerate(beats)]
         write_audio(args.click_audio, normalize(render_clicks(len(audio), sr, clicks, accent, normal)), sr)
         print(f"Wrote {args.click_audio} ({len(pre)} count-in clicks, {len(audio) / sr:.2f}s)")
 
