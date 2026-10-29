@@ -65,6 +65,39 @@ Useful options:
 
 Run `drums2click.py --help` for the full list.
 
+## Testing
+
+Ground truth is listening: a click is validated when it sounds right against the drums in the
+check WAV. Two tools build on that.
+
+**Regression** (`tools/regression.py`): re-runs the tool on stems validated by ear and compares
+the result with their reference MIDI. A change passes only if every song gives the same clicks
+and accents within 1 ms. References live in `reference/`, which is not in git because they are
+derived from copyrighted stems.
+
+```bat
+.venv\Scripts\python tools\regression.py
+.venv\Scripts\python tools\regression.py --add my_song "my song (Drums).flac"
+```
+
+Add a reference only after listening to its check WAV. The current set: Billie Jean, Livin' on a
+Prayer, Don't Fear the Reaper, It's My Life, Thriller.
+
+**Alignment check** (`tools/check_alignment.py stem.flac click.mid`): for a new song.
+- **Timing** is reliable. The onset envelope is averaged around each click, and the peak must be
+  near 0 ms (+1.5..+6 ms on the validated songs). Shifting the click by ±20 ms must move the peak
+  accordingly, as a control.
+- **Beat vs off-beat cannot be measured** automatically. A click moved by half a beat still lands
+  on hi-hat eighths, and the kick/snare ratio it prints ranges from 1.0x to 5.3x on correct
+  clicks. Listen to settle it.
+
+A "percentage of beats on a hit" metric is deliberately not used. With dense drums it scores ~90%
+even for a click shifted by half a beat, and it reported Battle Hymn as fine when it was not.
+
+**Known limit:** dense, complex metal (tested: Manowar's Battle Hymn, with 3/4 vs 6/8 feel
+changes, rolls and a free intro) does not give a usable click. An attempt to handle it with extra
+heuristics was reverted because it changed songs that already worked.
+
 ## Notes
 
 - Prefer FLAC or WAV for the click. MP3 adds encoder delay at the start, which some DAWs don't
